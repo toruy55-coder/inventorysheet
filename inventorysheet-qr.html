@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR在庫管理</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <style>
+        body { background-color: #f0f2f5; font-family: sans-serif; }
+        .card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        #reader { width: 100%; border-radius: 12px; overflow: hidden; }
+        /* スキャン画面のオーバーレイ（隠し要素） */
+        #scanner-container { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 50; flex-direction: column; justify-content: center; align-items: center; }
+    </style>
+</head>
+<body class="p-4">
+
+    <div id="scanner-container">
+        <div class="w-11/12 max-w-sm bg-white p-4 rounded-xl">
+            <div id="reader"></div>
+            <button onclick="stopScanner()" class="w-full mt-4 py-3 bg-gray-200 rounded-lg font-bold">キャンセル</button>
+        </div>
+    </div>
+
+    <div class="max-w-md mx-auto">
+        <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">在庫管理 (QR対応)</h1>
+
+        <div class="card p-5 mb-4 border-t-4 border-blue-600">
+            <label class="block text-sm font-bold text-gray-600 mb-2">商品コード</label>
+            <div class="flex gap-2">
+                <input type="text" id="productCode" placeholder="コード入力またはスキャン" 
+                    class="flex-1 border rounded-lg p-3 text-lg focus:ring-2 focus:ring-blue-500 outline-none" oninput="loadProductData()">
+                <button onclick="startScanner()" class="bg-blue-100 p-3 rounded-lg text-blue-600 active:bg-blue-200">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7V5a2 2 0 012-2h2m10 0h2a2 2 0 012 2v2m0 10v2a2 2 0 01-2 2h-2M7 23H5a2 2 0 01-2-2v-2M9 7a1 1 0 011-1h4a1 1 0 011 1v10a1 1 0 01-1 1h-4a1 1 0 01-1-1V7z" />
+                    </svg>
+                </button>
+            </div>
+            <p id="productStatus" class="text-xs mt-2 text-gray-400">※QRコードで読み取れます</p>
+        </div>
+
+        <div class="card p-6 mb-4 text-center">
+            <h2 class="text-gray-500 text-sm mb-1"><span id="displayCode">---</span> の現在庫</h2>
+            <div id="totalStock" class="text-5xl font-bold text-blue-600">0</div>
+        </div>
+
+        <div class="card p-5 mb-4">
+            <div class="grid grid-cols-2 gap-3">
+                <div class="col-span-2">
+                    <label class="block text-xs text-gray-500">日付</label>
+                    <input type="date" id="dateInput" class="w-full border rounded-lg p-2">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500">入庫数</label>
+                    <input type="number" id="inInput" placeholder="0" class="w-full border rounded-lg p-2 text-lg" inputmode="numeric">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500">出庫数</label>
+                    <input type="number" id="outInput" placeholder="0" class="w-full border rounded-lg p-2 text-lg" inputmode="numeric">
+                </div>
+                <button onclick="addRecord()" class="col-span-2 bg-blue-600 text-white py-3 rounded-lg font-bold mt-2 active:bg-blue-700">
+                    登録する
+                </button>
+            </div>
+        </div>
+
+        <div class="card p-4">
+            <h3 class="font-bold mb-3 border-b pb-2 text-gray-700 text-sm">入出庫履歴</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <tbody id="historyBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let inventoryStore = JSON.parse(localStorage.getItem('multiInventoryData')) || {};
+        let html5QrCode;
+
+        window.onload = () => {
+            document.getElementById('dateInput').value = new Date().toISOString().split('T')[0];
+        };
+
+        // --- QRスキャナー機能 ---
+        function startScanner() {
+            document.getElementById('scanner-container').style.display = 'flex';
+            html5QrCode = new Html5Qrcode("reader");
+            const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+
+            html5QrCode.start(
+                { facingMode: "environment" }, // 背面カメラを使用
+                config,
+                (decodedText) => {
+                    // 成功時
+                    document.getElementById('productCode').value = decodedText;
+                    stopScanner();
+                    loadProductData(); // データを読み込み
+                },
+                (errorMessage) => { /* スキャン中は無視 */ }
+            ).catch((err) => {
+                alert("カメラの起動に失敗しました: " + err);
+                stopScanner();
+            });
+        }
+
+        function stopScanner() {
+            if (html5QrCode) {
+                html5QrCode.stop().then(() => {
+                    document.getElementById('scanner-container').style.display = 'none';
+                });
+            } else {
+                document.getElementById('scanner-container').style.display = 'none';
+            }
+        }
+
+        // --- 在庫管理ロジック (前回同様) ---
+        function loadProductData() {
+            const code = document.getElementById('productCode').value.trim();
+            const displayCodeEl = document.getElementById('displayCode');
+            if (!code) { clearUI(); return; }
+            displayCodeEl.innerText = code;
+            updateUI(code);
+        }
+
+        function addRecord() {
+            const code = document.getElementById('productCode').value.trim();
+            const date = document.getElementById('dateInput').value;
+            const inCount = parseInt(document.getElementById('inInput').value) || 0;
+            const outCount = parseInt(document.getElementById('outInput').value) || 0;
+
+            if (!code) return alert("コードを入力してください");
+            if (!inventoryStore[code]) inventoryStore[code] = [];
+            inventoryStore[code].unshift({ id: Date.now(), date, inCount, outCount });
+            
+            saveAndRefresh(code);
+            document.getElementById('inInput').value = "";
+            document.getElementById('outInput').value = "";
+        }
+
+        function saveAndRefresh(code) {
+            localStorage.setItem('multiInventoryData', JSON.stringify(inventoryStore));
+            updateUI(code);
+        }
+
+        function updateUI(code) {
+            const tbody = document.getElementById('historyBody');
+            const totalStockEl = document.getElementById('totalStock');
+            tbody.innerHTML = "";
+            let totalStock = 0;
+            const records = inventoryStore[code] || [];
+
+            records.forEach(r => {
+                totalStock += (r.inCount - r.outCount);
+                tbody.innerHTML += `
+                    <tr class="border-b">
+                        <td class="py-3 text-gray-600">${r.date}</td>
+                        <td class="py-3 text-blue-600 font-bold">+${r.inCount}</td>
+                        <td class="py-3 text-red-500 font-bold">-${r.outCount}</td>
+                    </tr>`;
+            });
+            totalStockEl.innerText = totalStock;
+        }
+
+        function clearUI() {
+            document.getElementById('displayCode').innerText = "---";
+            document.getElementById('totalStock').innerText = "0";
+            document.getElementById('historyBody').innerHTML = "";
+        }
+    </script>
+</body>
+</html>
